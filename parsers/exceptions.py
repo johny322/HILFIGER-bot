@@ -1,0 +1,3 @@
+
+class CancelError(Exception):
+    pass
