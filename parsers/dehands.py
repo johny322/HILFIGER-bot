@@ -80,7 +80,10 @@ async def fetch_post(context) -> Post:
     data = data['listing']
     post_id = data['itemId']
     title = data['title']
-    price = data['priceInfo']['priceCents']
+    try:
+        price = data['priceInfo']['priceCents']/100
+    except:
+        price = None
     seller_data = data['seller']
     seller_id = seller_data['id']
     seller_name = seller_data['name']
