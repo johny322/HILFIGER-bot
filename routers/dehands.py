@@ -6,6 +6,7 @@ from aiogram import Router, types
 from aiogram.dispatcher.fsm.context import FSMContext
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import BufferedInputFile
+from asyncstdlib import zip_longest
 from loguru import logger
 
 from data.constants import MAX_COUNT
@@ -36,69 +37,40 @@ async def dehands_start(query: types.CallbackQuery):
         text=texts.parse_start_sub,
         reply_markup=start_parse_markup("dehands")
     )
-    # user = User.get(user_id=query.from_user.id)
-    # if user.subscriptioned_to is not None:
-    #     if user.subscriptioned_to > get_datetime_now():
-    #         await query.message.edit_text(
-    #             text=texts.parse_start_sub.format(
-    #                 date=user.subscriptioned_to.strftime("%d.%m.%Y %H:%M")
-    #             ),
-    #             reply_markup=start_parse_markup("dehands")
-    #         )
-    #         return
-    # await query.message.edit_text(
-    #     text=texts.pay_parser.format(
-    #         user_id=query.from_user.id,
-    #         admin_link=config.admin_link
-    #     ),
-    #     reply_markup=pay_markup
-    # )
 
 
 @router.callback_query(text="dehands")
 async def dehands(query: types.CallbackQuery, state: FSMContext):
     await query.message.edit_text(
-        text=texts.parse_url.format(
+        text=texts.parse_many_urls.format(
             parser_link="https://www.2dehands.be/q/apple/"
         ),
         reply_markup=delete_markup,
         disable_web_page_preview=True
     )
     await state.set_state(Dehands.url)
-    # user = User.get(user_id=query.from_user.id)
-    # if user.subscriptioned_to is not None:
-    #     if user.subscriptioned_to > get_datetime_now():
-    #         await query.message.edit_text(
-    #             text=texts.parse_url.format(
-    #                 parser_link="https://www.tutti.ch/de/li/ganze-schweiz?q=apple"
-    #             ),
-    #             reply_markup=delete_markup,
-    #             disable_web_page_preview=True
-    #         )
-    #         await state.set_state(Dehands.url)
-    #         return
-    # await query.message.edit_text(
-    #     text=texts.pay_parser.format(
-    #         user_id=query.from_user.id,
-    #         admin_link=config.admin_link
-    #     ),
-    #     reply_markup=pay_markup
-    # )
 
 
 @router.message(Dehands.url)
 async def dehands_url(message: types.Message, state: FSMContext):
-    match = re.match(r"(https://){0,1}(www\.){0,1}2dehands\.be/(.+)", message.text)
-    if match:
-        query = match.group(3)
-    else:
-        query = "q/" + message.text.lower().replace(' ', '+')
+    links = message.text.split('\n')
+    queries = []
+    for link in links:
+        link = link.strip()
+        if not link:
+            continue
+        match = re.match(r"(https://){0,1}(www\.){0,1}2dehands\.be/(.+)", link)
+        if match:
+            query = match.group(3)
+        else:
+            query = "q/" + link.lower().replace(' ', '+')
+        queries.append(query)
 
     await message.answer(
         text=texts.parse_count,
         reply_markup=count_markup
     )
-    await state.update_data(query=query)
+    await state.update_data(query=queries)
     await state.set_state(Dehands.count)
 
 
@@ -311,7 +283,7 @@ async def dehands_run_parse(message: types.Message, state: FSMContext):
         else:
             preset = DehandsPreset.get(owner=user, id=data['preset_id'])
 
-        query = preset.query
+        queries = preset.query.split('\n')
         count = int(message.text)
         if count > MAX_COUNT:
             await message.answer(
@@ -329,7 +301,7 @@ async def dehands_run_parse(message: types.Message, state: FSMContext):
         max_views = preset.max_views
         max_rating = preset.max_rating
     else:
-        query = data["query"]
+        queries = data["query"]
         count = data["count"]
         price_s = data["price_s"]
         price_e = data["price_e"]
@@ -375,7 +347,7 @@ async def dehands_run_parse(message: types.Message, state: FSMContext):
             DehandsPreset.create(
                 owner=user,
                 name=message.text,
-                query=query,
+                query='\n'.join(queries),
                 price_s=price_s,
                 price_e=price_e,
                 reg_date=seller_reg,
@@ -405,119 +377,129 @@ async def dehands_run_parse(message: types.Message, state: FSMContext):
 
     skip_ban_word = 0
     skip_ban_post = 0
-    url = f"https://www.2dehands.be/{query}"
-    async for post, get_posts in dehands_parse(url, 2):
-        if get_posts:
-            await message.answer(
-                text=texts.parser_get_posts.format(
-                    count_posts=get_posts
+    domain = "https://www.2dehands.be/"
+    urls = [domain + query for query in queries]
+    # url = f"https://www.2dehands.be/{query}"
+    funcs = [dehands_parse(url, 2) for url in urls]
+    async for parser_results in zip_longest(*funcs):
+        if not parser_results:
+            continue
+        for post, get_posts, start_url in parser_results:
+            if get_posts:
+                await message.answer(
+                    text=texts.parser_many_get_posts.format(
+                        count_posts=get_posts,
+                        url=start_url
+                    ),
+                    disable_web_page_preview=True
                 )
-            )
-            posts_getted += get_posts
-        curr_state = await state.get_state()
-        if not "Dehands:cancel" == curr_state:
-            await message.answer(
-                text=texts.parse_interrupted,
-                reply_markup=menu_markup
-            )
-            return
-        await sleep(0.1)
-        if not post.price:
-            skip_post_price += 1
-            continue
-        if post.price > price_e or post.price < price_s:
-            skip_post_price += 1
-            continue
-        if post_date:
-            if post_date > post.created:
-                skip_post_date += 1
-                continue
-        if seller_reg:
-            if seller_reg > post.seller_reg:
-                skip_reg_date += 1
-                continue
-        if max_views is not None:
-            if max_views < post.views:
-                skip_max_views += 1
-                continue
-        if max_rating is not None:
-            if max_rating < post.seller_rating:
-                skip_max_rating += 1
-                continue
-        if max_posts is not None:
-            if max_posts < post.seller_posts:
-                skip_max_posts += 1
-                continue
-
-        if log.only_with_phone and not post.phone:
-            skip_only_phone += 1
-            continue
-
-        word_ban = False
-        for word in post.title.split():
-            try:
-                BlackWord.get(
-                    owner=user,
-                    name=word
+                posts_getted += get_posts
+            curr_state = await state.get_state()
+            if not "Dehands:cancel" == curr_state:
+                await message.answer(
+                    text=texts.parse_interrupted,
+                    reply_markup=menu_markup
                 )
-                word_ban = True
-                break
-            except BlackWord.DoesNotExist:
-                pass
-        if word_ban:
-            skip_ban_word += 1
-            continue
+                return
+            await sleep(0.1)
+            if not post.price:
+                skip_post_price += 1
+                continue
+            if post.price > price_e or post.price < price_s:
+                skip_post_price += 1
+                continue
+            if post_date:
+                if post_date > post.created:
+                    skip_post_date += 1
+                    continue
+            if seller_reg:
+                if seller_reg > post.seller_reg:
+                    skip_reg_date += 1
+                    continue
+            if max_views is not None:
+                if max_views < post.views:
+                    skip_max_views += 1
+                    continue
+            if max_rating is not None:
+                if max_rating < post.seller_rating:
+                    skip_max_rating += 1
+                    continue
+            if max_posts is not None:
+                if max_posts < post.seller_posts:
+                    skip_max_posts += 1
+                    continue
 
-        wa_texts = []
-        for modl in DehandsText.select().where(DehandsText.owner == user):
-            mtext = modl.text.replace("@link", "{link}"
-                                      ).replace("@seller", "{seller}"
-                                                ).replace("@price", "{price}"
-                                                          ).replace("@itemname", "{itemname}").format(
-                seller=post.seller_name,
-                price=post.price,
-                itemname=post.title,
-                link=post.link,
-            )
-            wa_texts.append((
-                f"<a href='https://web.whatsapp.com/send?phone={post.phone}&text={urllib.parse.quote(mtext)}'>{modl.name}</a>",
-                f"<a href='https://api.whatsapp.com/send?phone={post.phone}&text={urllib.parse.quote(mtext)}'>{modl.name}</a>",
-            ))
+            if log.only_with_phone and not post.phone:
+                skip_only_phone += 1
+                continue
 
-        extra = dict(
-            wa_texts=wa_texts,
-            currency='EUR',
-        )
-
-        try:
-            if user.other_banned:
-                DehandsBanned.get(seller=post.seller_id)
-            else:
-                DehandsBanned.get(owner=user, seller=post.seller_id)
-            logger.debug("post in black list")
-            skip_ban_post += 1
-            continue
-        except DehandsBanned.DoesNotExist:
-            DehandsBanned.create(owner=user, seller=post.seller_id)
-
-        text = create_result_text(post, log, extra)
-        posts_counted += 1
-        text += f"\nℹ️ Осталось спарсить объявлений: <b>{count - posts_counted}/{count}</b>"
-
-        if log.photo:
-            try:
-                await message.answer_photo(
-                    photo=post.photo_url,
-                    caption=text
-                )
-            except TelegramBadRequest as e:
-                if 'MEDIA_CAPTION_TOO_LONG' in str(e):
-                    await message.answer_photo(
-                        photo=post.photo_url
+            word_ban = False
+            for word in post.title.split():
+                try:
+                    BlackWord.get(
+                        owner=user,
+                        name=word
                     )
-                    await message.answer(text=text, disable_web_page_preview=True)
-        else:
-            await message.answer(text=text, disable_web_page_preview=True)
+                    word_ban = True
+                    break
+                except BlackWord.DoesNotExist:
+                    pass
+            if word_ban:
+                skip_ban_word += 1
+                continue
+
+            wa_texts = []
+            for modl in DehandsText.select().where(DehandsText.owner == user):
+                mtext = modl.text.replace("@link", "{link}"
+                                          ).replace("@seller", "{seller}"
+                                                    ).replace("@price", "{price}"
+                                                              ).replace("@itemname", "{itemname}").format(
+                    seller=post.seller_name,
+                    price=post.price,
+                    itemname=post.title,
+                    link=post.link,
+                )
+                wa_texts.append((
+                    f"<a href='https://web.whatsapp.com/send?phone={post.phone}&text={urllib.parse.quote(mtext)}'>{modl.name}</a>",
+                    f"<a href='https://api.whatsapp.com/send?phone={post.phone}&text={urllib.parse.quote(mtext)}'>{modl.name}</a>",
+                ))
+
+            extra = dict(
+                wa_texts=wa_texts,
+                currency='EUR',
+            )
+
+            try:
+                if user.other_banned:
+                    DehandsBanned.get(seller=post.seller_id)
+                else:
+                    DehandsBanned.get(owner=user, seller=post.seller_id)
+                logger.debug("post in black list")
+                skip_ban_post += 1
+                continue
+            except DehandsBanned.DoesNotExist:
+                DehandsBanned.create(owner=user, seller=post.seller_id)
+
+            text = create_result_text(post, log, extra)
+            posts_counted += 1
+            text += f"\nℹ️ Осталось спарсить объявлений: <b>{count - posts_counted}/{count}</b>"
+
+            if log.photo:
+                try:
+                    await message.answer_photo(
+                        photo=post.photo_url,
+                        caption=text
+                    )
+                except TelegramBadRequest as e:
+                    if 'MEDIA_CAPTION_TOO_LONG' in str(e):
+                        await message.answer_photo(
+                            photo=post.photo_url
+                        )
+                        await message.answer(text=text, disable_web_page_preview=True)
+            else:
+                await message.answer(text=text, disable_web_page_preview=True)
+            if posts_counted >= count:
+                break
         if posts_counted >= count:
             break
     all_skip = skip_post_price + skip_post_date + skip_reg_date + skip_max_views + skip_max_rating + \

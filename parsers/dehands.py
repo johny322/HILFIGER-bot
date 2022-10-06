@@ -6,6 +6,7 @@ import re
 from asyncio import sleep
 from datetime import datetime
 
+from asyncstdlib import zip_longest
 from fake_headers import Headers
 from loguru import logger
 from dateutil.parser import parse
@@ -81,7 +82,7 @@ async def fetch_post(context) -> Post:
     post_id = data['itemId']
     title = data['title']
     try:
-        price = data['priceInfo']['priceCents']/100
+        price = data['priceInfo']['priceCents'] / 100
     except:
         price = None
     seller_data = data['seller']
@@ -180,6 +181,7 @@ async def fetch_post(context) -> Post:
 async def dehands_parse(url, page_sleep: int = 2):
     page = 1
     get_posts = None
+    start_url = url
     url = get_next_url(url, page)
 
     async with aiohttp.ClientSession() as session:
@@ -218,7 +220,7 @@ async def dehands_parse(url, page_sleep: int = 2):
                 try:
                     post = await fetch_post(result)
                     # post = None
-                    yield (post, get_posts)
+                    yield post, get_posts, start_url
                     get_posts = None
                 except CancelError as ex:
                     logger.warning(ex)
@@ -236,8 +238,10 @@ async def main():
     url2 = "https://www.2dehands.be/l/audio-tv-en-foto/accu-s-en-batterijen/#Language:all-languages%7CPriceCentsTo:10000"
     url3 = 'https://www.2dehands.be/l/auto-s/daewoo/'
     url4 = 'https://www.2dehands.be/q/apple/'
-    async for post, get_posts in dehands_parse(url4):
-        print(post, get_posts)
+    # async for post, get_posts in dehands_parse(url4):
+    #     print(post, get_posts)
+    async for data1, data2 in zip_longest(dehands_parse(url4), dehands_parse(url3)):
+        print(data1, data2)
 
 
 async def main1():
@@ -251,7 +255,6 @@ async def main1():
     print(hasattr(res, 'currency'))
 
 
-
 if __name__ == "__main__":
     # print(get_next_url('https://www.2dehands.be/l/audio-tv-en-foto/accu-s-en-batterijen/', 3))
-    asyncio.run(main1())
+    asyncio.run(main())
